@@ -27,7 +27,10 @@ let
   # Generated nginx.conf + uwsgi_params (OpenResty, with Lua cache headers).
   nginxConf = import ./nginx-conf.nix { inherit pkgs lib constants; };
 
-  # The single OpenResty + uWSGI + Django OCI image.
+  # Generated nginx.conf for the Rust stack (proxy_pass/proxy_cache over UDS).
+  rustNginxConf = import ./rust-nginx-conf.nix { inherit pkgs lib constants; };
+
+  # The Python (uWSGI+Django) and Rust (monoio) OCI images.
   containers = import ./containers {
     inherit
       pkgs
@@ -35,9 +38,12 @@ let
       constants
       djangoApp
       nginxConf
+      rustApp
+      rustNginxConf
       ;
   };
   ociWebapp = containers.oci-webapp;
+  ociRustWebapp = containers.oci-rust-webapp;
 
   # MicroVM runner: dockerd loads + runs the OCI image; port forwarded to host.
   # The siege runner is baked into the guest too, so it can be run from inside
@@ -52,10 +58,14 @@ let
       siegeBenchmark
       ;
     ociImage = ociWebapp;
+    ociRustImage = ociRustWebapp;
   };
 
   # siege load-test runner (raw vs cached via --target).
   siegeBenchmark = import ./benchmark.nix { inherit pkgs lib constants; };
+
+  # The high-performance Rust df daemon (monoio/io_uring, thread-per-core).
+  rustApp = import ./rust-app.nix { inherit pkgs lib src; };
 
   # nix flake check targets.
   checks = import ./checks.nix {
@@ -84,6 +94,8 @@ in
     oci-webapp = ociWebapp;
     vm = microvms.runner;
     siege-benchmark = siegeBenchmark;
+    rust-app = rustApp;
+    oci-rust-webapp = ociRustWebapp;
   };
 
   devShells.default = devshell;

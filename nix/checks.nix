@@ -12,6 +12,27 @@
 }:
 
 {
+  # Rust gate: rustfmt --check, clippy (deny warnings), and the table-driven
+  # unit + integration tests. Runs hermetically (no rustup in the sandbox).
+  rust-tests = pkgs.rustPlatform.buildRustPackage {
+    pname = "rust-df-tests";
+    version = "0.1.0";
+    src = lib.cleanSource (src + "/rust");
+    cargoLock.lockFile = src + "/rust/Cargo.lock";
+    nativeBuildInputs = [
+      pkgs.cmake
+      pkgs.gcc
+      pkgs.clippy
+      pkgs.rustfmt
+    ];
+    doCheck = true;
+    # Enforce formatting + lints before the tests run.
+    preCheck = ''
+      cargo fmt --check
+      cargo clippy --all-targets --release -- -D warnings
+    '';
+  };
+
   python-tests =
     pkgs.runCommand "python-tests"
       {

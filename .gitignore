@@ -10,3 +10,6 @@ result-*
 
 # MicroVM state
 *.img
+
+# Rust
+/rust/target/

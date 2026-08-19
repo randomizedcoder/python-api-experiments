@@ -20,18 +20,21 @@ pkgs.writeShellApplication {
   runtimeInputs = [ pkgs.siege ];
   text = ''
     target="raw"
+    stack="python"
     host="127.0.0.1"
-    port="${toString constants.nginxPort}"
+    port=""
     concurrency="${toString constants.benchConcurrency}"
 
     usage() {
       cat <<'EOF'
-    Usage: siege-benchmark [--target raw|cached] [--host HOST] [--port PORT] [--concurrent N]
+    Usage: siege-benchmark [--stack python|rust] [--target raw|cached] [--host HOST] [--port PORT] [--concurrent N]
 
+      --stack python    hit the Python stack on port ${toString constants.nginxPort}     [default]
+      --stack rust      hit the Rust stack   on port ${toString constants.rustNginxPort}
       --target raw      hit /api/df/         (no nginx cache)      [default]
       --target cached   hit /cached/api/df/  (tmpfs nginx cache)
       --host HOST       default 127.0.0.1
-      --port PORT       default ${toString constants.nginxPort}
+      --port PORT       override the stack's default port
       --concurrent N    concurrent users, default ${toString constants.benchConcurrency}
 
     Runs: siege --benchmark --time=60S --concurrent=N <url>
@@ -40,6 +43,7 @@ pkgs.writeShellApplication {
 
     while [ "$#" -gt 0 ]; do
       case "$1" in
+        --stack)      stack="$2"; shift 2 ;;
         --target)     target="$2"; shift 2 ;;
         --host)       host="$2"; shift 2 ;;
         --port)       port="$2"; shift 2 ;;
@@ -49,6 +53,15 @@ pkgs.writeShellApplication {
       esac
     done
 
+    # Default port follows the chosen stack unless --port overrides it.
+    if [ -z "$port" ]; then
+      case "$stack" in
+        python) port="${toString constants.nginxPort}" ;;
+        rust)   port="${toString constants.rustNginxPort}" ;;
+        *) echo "invalid --stack: $stack (expected python|rust)" >&2; exit 2 ;;
+      esac
+    fi
+
     case "$target" in
       raw)    path="/api/df/" ;;
       cached) path="/cached/api/df/" ;;
@@ -56,7 +69,7 @@ pkgs.writeShellApplication {
     esac
 
     url="http://$host:$port$path"
-    echo "siege benchmark: target=$target url=$url concurrent=$concurrency time=60S"
+    echo "siege benchmark: stack=$stack target=$target url=$url concurrent=$concurrency time=60S"
     echo
 
     exec siege \
