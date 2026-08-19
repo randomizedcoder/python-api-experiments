@@ -1,0 +1,5 @@
+# Portable performance baseline: x86-64-v3 (AVX2-era) rather than `native`, so
+# the binary built in one place still runs on the MicroVM's vCPU. Use `native`
+# only for host-local micro-benchmarking.
+[build]
+rustflags = ["-C", "target-cpu=x86-64-v3"]

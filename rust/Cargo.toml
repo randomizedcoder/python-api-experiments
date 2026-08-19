@@ -1,0 +1,39 @@
+[package]
+name = "rust-df"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance async df-API (monoio/io_uring) mirroring the Python app"
+license = "MIT"
+
+[lib]
+name = "rust_df"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rust-df"
+path = "src/main.rs"
+
+[dependencies]
+# Thread-per-core io_uring runtime.
+monoio = "0.2"
+# statvfs(2) via raw syscalls (no libc).
+rustix = { version = "0.38", features = ["fs"] }
+# Minimal HTTP/1.1 request-head parsing.
+httparse = "1"
+# Correct JSON string escaping for arbitrary mount-point names.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Fast integer formatting for Content-Length.
+itoa = "1"
+# Better multithreaded allocation for this churn pattern.
+mimalloc = "0.1"
+# CPU pinning for the thread-per-core workers.
+core_affinity = "0.8"
+
+# Note: `panic = "abort"` is intentionally NOT set — it conflicts with
+# `cargo test` on stable Rust. The rest tunes the release build hard.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+strip = true

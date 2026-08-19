@@ -1,12 +1,13 @@
 # nix/microvms/mkVm.nix
 #
 # Builds the microVM runner (a nixosSystem using the microvm.nix module). The
-# VM runs dockerd, loads the OCI image from the shared /nix/store, and runs it
-# publishing the nginx port. That port is forwarded host -> guest via qemu's
-# SLiRP hostfwd, so from the hypervisor:
+# VM runs dockerd and, from a shared /nix/store, loads + runs one OCI container
+# per entry in `containers`, each publishing its nginx port. Those ports are
+# forwarded host -> guest via qemu's SLiRP hostfwd, so from the hypervisor:
 #
-#   curl 127.0.0.1:${nginxPort}/api/df/          # raw
-#   curl 127.0.0.1:${nginxPort}/cached/api/df/   # cached
+#   curl 127.0.0.1:8080/api/df/          # Python (uWSGI+Django)
+#   curl 127.0.0.1:8081/api/df/          # Rust (monoio)
+#   curl 127.0.0.1:8081/cached/api/df/   # Rust, cached
 #
 # Returns .config.microvm.declaredRunner (provides /bin/microvm-run).
 #
@@ -15,12 +16,55 @@
   lib,
   microvm,
   nixpkgs,
-  constants, # shared app constants (nginxPort, cacheMaxSize, ...)
+  constants, # shared app constants (nginxPort, rustNginxPort, cacheMaxSize, ...)
   vmConstants, # ./constants.nix
-  ociImage, # the streamLayeredImage script
-  siegeBenchmark, # siege load-test runner, so it can run inside the guest too
+  containers, # list of { name; image; imageRef; port; tmpfsDir; extraArgs; }
+  siegeBenchmark, # siege load-test runner, baked into the guest
 }:
 
+let
+  # One systemd service per container: load the streamed image from the shared
+  # store, then `docker run` it publishing its port with a tmpfs cache dir.
+  mkService = c: {
+    name = "webapp-${c.name}";
+    value = {
+      description = "Load and run the ${c.name} OCI image";
+      after = [ "docker.service" ];
+      requires = [ "docker.service" ];
+      wantedBy = [ "multi-user.target" ];
+      path = [
+        pkgs.docker
+        pkgs.coreutils
+      ];
+      serviceConfig = {
+        Type = "simple";
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+      script = ''
+        set -euo pipefail
+
+        # Wait for dockerd.
+        for _ in $(seq 1 60); do
+          docker info >/dev/null 2>&1 && break
+          sleep 1
+        done
+        docker info >/dev/null 2>&1 || { echo "FATAL: docker not ready"; exit 1; }
+
+        # Load the image straight from the store-shared stream script.
+        ${c.image} | docker load
+
+        docker rm -f ${c.name} >/dev/null 2>&1 || true
+
+        exec docker run --rm --name ${c.name} \
+          --publish ${toString c.port}:${toString c.port} \
+          --tmpfs ${c.tmpfsDir}:size=${constants.cacheMaxSize} \
+          ${c.extraArgs} \
+          ${c.imageRef}
+      '';
+    };
+  };
+in
 (nixpkgs.lib.nixosSystem {
   inherit pkgs;
   modules = [
@@ -50,17 +94,15 @@
             }
           ];
 
-          # Host -> guest port forward. `curl host:${nginxPort}` on the
-          # hypervisor reaches the guest, where docker -p routes it to nginx.
-          forwardPorts = [
-            {
-              from = "host";
-              host.port = constants.nginxPort;
-              guest.port = constants.nginxPort;
-            }
-          ];
+          # Host -> guest port forward, one per container. `curl host:<port>` on
+          # the hypervisor reaches the guest, where docker -p routes it to nginx.
+          forwardPorts = map (c: {
+            from = "host";
+            host.port = c.port;
+            guest.port = c.port;
+          }) containers;
 
-          # Real disk for /var/lib/docker (tmpfs root can't hold the image).
+          # Real disk for /var/lib/docker (tmpfs root can't hold the images).
           volumes = [
             {
               image = "docker-var.img";
@@ -71,7 +113,7 @@
             }
           ];
 
-          # Share the host store read-only so the image + its closure are
+          # Share the host store read-only so the images + their closures are
           # available in-guest without a network pull.
           shares = [
             {
@@ -83,8 +125,7 @@
           ];
         };
 
-        # Bring eth0 up via DHCP (SLiRP hands out 10.0.2.15); without an IP the
-        # hostfwd'd packets have nowhere to land.
+        # Bring eth0 up via DHCP (SLiRP hands out 10.0.2.15).
         systemd.network.enable = true;
         networking.useNetworkd = true;
         networking.useDHCP = false;
@@ -93,58 +134,20 @@
           networkConfig.DHCP = "yes";
         };
 
-        networking.firewall.allowedTCPPorts = [ constants.nginxPort ];
+        networking.firewall.allowedTCPPorts = map (c: c.port) containers;
 
         virtualisation.docker = {
           enable = true;
           enableOnBoot = true;
         };
 
-        # docker CLI for debugging; siege-benchmark so you can load-test from
-        # inside the guest (bypasses host<->guest network overhead):
-        #   siege-benchmark --target cached
         environment.systemPackages = [
           pkgs.docker
-          siegeBenchmark
+          siegeBenchmark # so you can load-test from inside the guest
         ];
 
-        # Load the OCI image from the store and run it, publishing the nginx
-        # port and mounting the cache dir as tmpfs (RAM-backed cache).
-        systemd.services.webapp = {
-          description = "Load and run the webapp OCI image";
-          after = [ "docker.service" ];
-          requires = [ "docker.service" ];
-          wantedBy = [ "multi-user.target" ];
-          path = [
-            pkgs.docker
-            pkgs.coreutils
-          ];
-          serviceConfig = {
-            Type = "simple";
-            Restart = "on-failure";
-            RestartSec = 5;
-          };
-          script = ''
-            set -euo pipefail
-
-            # Wait for dockerd.
-            for _ in $(seq 1 60); do
-              docker info >/dev/null 2>&1 && break
-              sleep 1
-            done
-            docker info >/dev/null 2>&1 || { echo "FATAL: docker not ready"; exit 1; }
-
-            # Load the image straight from the store-shared stream script.
-            ${ociImage} | docker load
-
-            docker rm -f webapp >/dev/null 2>&1 || true
-
-            exec docker run --rm --name webapp \
-              --publish ${toString constants.nginxPort}:${toString constants.nginxPort} \
-              --tmpfs /var/cache/nginx:size=${constants.cacheMaxSize} \
-              webapp:latest
-          '';
-        };
+        # One load-and-run service per container.
+        systemd.services = builtins.listToAttrs (map mkService containers);
       }
     )
   ];

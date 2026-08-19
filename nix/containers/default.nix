@@ -8,6 +8,8 @@
   constants,
   djangoApp,
   nginxConf,
+  rustApp,
+  rustNginxConf,
 }:
 
 let
@@ -21,6 +23,17 @@ in
       constants
       djangoApp
       nginxConf
+      mkOciImage
+      ;
+  };
+
+  oci-rust-webapp = import ./oci-rust-webapp.nix {
+    inherit
+      pkgs
+      lib
+      constants
+      rustApp
+      rustNginxConf
       mkOciImage
       ;
   };
